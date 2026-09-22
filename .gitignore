@@ -1,0 +1,16 @@
+# Vivado-managed project (not tracked in this repo)
+vivado_project/
+*.cache/
+*.runs/
+*.sim/
+*.jou
+*.log
+.Xil/
+*.str
+*.bit
+*.ltx
+
+# Icarus Verilog / simulation build output
+scripts/build/
+*.vvp
+*.vcd
