@@ -16,3 +16,5 @@ scripts/build/
 *.vcd
 
 Trade_CPU vivado/
+
+Trade_CPU vivado/
