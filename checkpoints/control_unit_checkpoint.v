@@ -1,17 +1,21 @@
 `timescale 1ns/1ps
 
-// Stage 1 opcodes (NOP/ADD/SUB/MUL/CMP_GT/CMP_LT) plus Stage 2's
-// LOAD_IMM/JMP/JMP_IF -- no buffers/VAR/BALANCE/UART yet.
+// SYNTHESIS-CHECKPOINT HARNESS FILE -- see checkpoints/README.md.
+// NOT part of the real design; not wired into rtl/ or sim/.
 //
-// prog_mem is loaded directly by the testbench for now; the UART loader
-// is Stage 6.
+// Snapshot of rtl/control_unit.v as of Stage 2, renamed
+// control_unit_checkpoint, with exactly one addition: an initial
+// $readmemh block for prog_mem, so prog_mem has real synthesizable
+// content for a standalone Vivado check. Plain top-level synthesis of
+// tradecpu_core sweeps control_unit to 0 cells otherwise, since prog_mem
+// is never written in synthesizable RTL -- only Stage 6's real UART
+// loader will do that. rtl/control_unit.v itself is untouched.
 //
-// LOAD_IMM/JMP/JMP_IF are two-word instructions (spec section 3): word0
-// carries the opcode plus Rd or Rs1, word1's low bits carry the
-// immediate/address. That needs an extra fetch cycle (S_FETCH2) between
-// DECODE and EXECUTE to pull word1 in before we can act on it.
+// This file goes stale the moment rtl/control_unit.v changes (new
+// opcodes, FSM changes, etc). Regenerate it before reusing at a later
+// stage -- see checkpoints/README.md for the exact procedure.
 
-module control_unit (
+module control_unit_checkpoint (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -51,6 +55,12 @@ module control_unit (
     reg [31:0] ir2;          // second word of a two-word instruction
 
     reg [31:0] prog_mem [0:511];
+
+    // checkpoint-only: gives prog_mem real content so synthesis has
+    // something to analyze. See file header.
+    initial begin
+        $readmemh("C:/Users/abhay/OneDrive/Documents/projects/Trade CPU/checkpoints/tradecpu_stage2_checkpoint.hex", prog_mem);
+    end
 
     wire [4:0] opcode_f = ir[31:27];
     wire [2:0] rd_f     = ir[26:24];
