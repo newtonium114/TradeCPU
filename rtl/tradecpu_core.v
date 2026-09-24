@@ -1,12 +1,19 @@
 `timescale 1ns/1ps
 
-// No external I/O yet (no UART, no ticks), so just clk/rst_n for now.
+// Only external I/O so far is the tick staging port. There's no UART
+// yet (Stage 6), so testbenches drive it directly; Stage 6's TICK decoder
+// drives the same three signals (one 1-cycle tick_valid strobe per
+// decoded TICK message, spec 6.2). Tie tick_valid low if unused.
 // Testbenches reach into internal state via hierarchical refs instead
 // of needing debug ports here.
 
 module tradecpu_core (
-    input wire clk,
-    input wire rst_n
+    input wire        clk,
+    input wire        rst_n,
+
+    input wire        tick_valid,
+    input wire [2:0]  tick_buf_id,
+    input wire [15:0] tick_price
 );
 
     wire        rf_we;
@@ -21,6 +28,13 @@ module tradecpu_core (
     wire [31:0] alu_in1;
     wire [31:0] alu_in2;
     wire [31:0] alu_result;
+
+    wire [2:0]  buf_rd_id;
+    wire [4:0]  buf_rd_days_before;
+    wire [15:0] buf_rd_data;
+    wire [4:0]  buf_tick_pending;
+    wire        buf_all_ticks_pending;
+    wire        buf_advance;
 
     register_file u_register_file (
         .clk    (clk),
@@ -41,6 +55,20 @@ module tradecpu_core (
         .result (alu_result)
     );
 
+    stock_buffers u_stock_buffers (
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .tick_valid        (tick_valid),
+        .tick_buf_id       (tick_buf_id),
+        .tick_price        (tick_price),
+        .tick_pending      (buf_tick_pending),
+        .all_ticks_pending (buf_all_ticks_pending),
+        .advance           (buf_advance),
+        .rd_buf_id         (buf_rd_id),
+        .rd_days_before    (buf_rd_days_before),
+        .rd_data           (buf_rd_data)
+    );
+
     control_unit u_control_unit (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -54,7 +82,12 @@ module tradecpu_core (
         .alu_opcode (alu_opcode),
         .alu_in1    (alu_in1),
         .alu_in2    (alu_in2),
-        .alu_result (alu_result)
+        .alu_result (alu_result),
+        .buf_rd_id             (buf_rd_id),
+        .buf_rd_days_before    (buf_rd_days_before),
+        .buf_rd_data           (buf_rd_data),
+        .buf_all_ticks_pending (buf_all_ticks_pending),
+        .buf_advance           (buf_advance)
     );
 
 endmodule
