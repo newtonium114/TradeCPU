@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 
 // Stage 1 opcodes (NOP/ADD/SUB/MUL/CMP_GT/CMP_LT), Stage 2's
-// LOAD_IMM/JMP/JMP_IF, and Stage 3's buffer ops -- no VAR/BALANCE/UART yet.
+// LOAD_IMM/JMP/JMP_IF, Stage 3's buffer ops, and Stage 4's DIV and
+// GETSUMPRICEBEFORE -- no VAR/BALANCE/UART yet.
 //
 // prog_mem is loaded directly by the testbench for now; the UART loader
 // is Stage 6.
@@ -20,6 +21,22 @@
 // staged tick. buf_advance is asserted for exactly that one cycle, then
 // WRITEBACK moves the PC on as usual. With all ticks already waiting it
 // takes the same 4 cycles as any other 1-word op.
+//
+// DIV: DECODE pulses div_start with Rs1/Rs2 (the register file reads are
+// combinational off ir, so they're valid in DECODE), then S_DIV_WAIT
+// holds until div_done. With divider.v that's 17 cycles in S_DIV_WAIT,
+// 20 cycles fetch-to-fetch. Waiting on done rather than a fixed count
+// means the Divider Generator IP can replace divider.v without touching
+// this FSM.
+//
+// GETSUMPRICEBEFORE Rd, buf_id, N: imm5 is the WINDOW SIZE N -- the N most
+// recent entries including today, i.e. days_before offsets 0..N-1. N=30
+// sums the whole buffer, every slot exactly once (no mod-30 aliasing,
+// since offsets only run to 29). N=0 sums nothing -> 0 and takes the
+// normal 1-word path. imm5=31 is outside the spec's 0-30 range; it clamps
+// to 30. Otherwise S_SUM_WAIT reads one entry per cycle through the same
+// stock_buffers read port GETSTOCKPRICEBEFORE uses, so it takes exactly N
+// cycles (<= 30, spec section 4).
 
 module control_unit (
     input  wire        clk,
@@ -42,13 +59,20 @@ module control_unit (
     output wire [4:0]  buf_rd_days_before,
     input  wire [15:0] buf_rd_data,
     input  wire        buf_all_ticks_pending,
-    output wire        buf_advance
+    output wire        buf_advance,
+
+    output wire        div_start,
+    output wire [31:0] div_dividend,
+    output wire [31:0] div_divisor,
+    input  wire        div_done,
+    input  wire [31:0] div_quotient
 );
 
     localparam OP_NOP      = 5'h00;
     localparam OP_ADD      = 5'h01;
     localparam OP_SUB      = 5'h02;
     localparam OP_MUL      = 5'h03;
+    localparam OP_DIV      = 5'h04;
     localparam OP_CMP_GT   = 5'h05;
     localparam OP_CMP_LT   = 5'h06;
     localparam OP_LOAD_IMM = 5'h09;
@@ -56,6 +80,7 @@ module control_unit (
     localparam OP_JMP_IF   = 5'h0B;
     localparam OP_GETSTOCKPRICE         = 5'h0F;
     localparam OP_GETSTOCKPRICEBEFORE   = 5'h10;
+    localparam OP_GETSUMPRICEBEFORE     = 5'h11;
     localparam OP_UPDATEALLSTOCKBUFFERS = 5'h13;
 
     localparam S_FETCH     = 3'd0;
@@ -64,11 +89,16 @@ module control_unit (
     localparam S_EXECUTE   = 3'd3;
     localparam S_WRITEBACK = 3'd4;
     localparam S_WAIT_TICKS = 3'd5;
+    localparam S_DIV_WAIT   = 3'd6;
+    localparam S_SUM_WAIT   = 3'd7;
 
     reg [2:0]  state;
     reg [8:0]  pc;           // 512-word prog mem -> 9 bits
     reg [31:0] ir;
     reg [31:0] ir2;          // second word of a two-word instruction
+
+    reg [31:0] sum_acc;      // GETSUMPRICEBEFORE running total
+    reg [4:0]  sum_idx;      // days_before offset currently being read
 
     reg [31:0] prog_mem [0:511];
 
@@ -98,6 +128,10 @@ module control_unit (
     wire is_buf_read         = is_get_price || is_get_price_before;
     wire is_update_bufs      = (opcode_f == OP_UPDATEALLSTOCKBUFFERS);
 
+    wire is_div     = (opcode_f == OP_DIV);
+    wire is_sum     = (opcode_f == OP_GETSUMPRICEBEFORE);
+    wire [4:0] sum_len = (imm5_f > 5'd30) ? 5'd30 : imm5_f;
+
     assign rf_raddr1  = rs1_f;
     assign rf_raddr2  = rs2_f;
     assign alu_opcode = opcode_f;
@@ -107,14 +141,22 @@ module control_unit (
     // GETSTOCKPRICE is just "0 days before"; force it rather than trust
     // the unused imm5 field to be zero
     assign buf_rd_id          = buf_id_f;
-    assign buf_rd_days_before = is_get_price_before ? imm5_f : 5'd0;
+    assign buf_rd_days_before = is_get_price_before ? imm5_f  :
+                                is_sum              ? sum_idx : 5'd0;
     assign buf_advance        = (state == S_WAIT_TICKS) && buf_all_ticks_pending;
+
+    assign div_start    = (state == S_DECODE) && is_div;
+    assign div_dividend = rf_rdata1;
+    assign div_divisor  = rf_rdata2;
 
     assign rf_waddr = rd_f;
     assign rf_wdata = is_load_imm ? {{16{imm16_f[15]}}, imm16_f} :
                       is_buf_read ? {{16{buf_rd_data[15]}}, buf_rd_data} :
+                      is_div      ? div_quotient :
+                      is_sum      ? sum_acc :
                                     alu_result;
-    assign rf_we    = (state == S_WRITEBACK) && (is_write_opcode || is_load_imm || is_buf_read);
+    assign rf_we    = (state == S_WRITEBACK) &&
+                      (is_write_opcode || is_load_imm || is_buf_read || is_div || is_sum);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -122,6 +164,8 @@ module control_unit (
             pc    <= 9'd0;
             ir    <= 32'd0;
             ir2   <= 32'd0;
+            sum_acc <= 32'd0;
+            sum_idx <= 5'd0;
         end else begin
             case (state)
                 S_FETCH: begin
@@ -130,16 +174,37 @@ module control_unit (
                 end
 
                 S_DECODE: begin
+                    if (is_sum) begin
+                        sum_acc <= 32'd0;
+                        sum_idx <= 5'd0;
+                    end
+
                     if (is_two_word)
                         state <= S_FETCH2;
                     else if (is_update_bufs)
                         state <= S_WAIT_TICKS;
+                    else if (is_div)
+                        state <= S_DIV_WAIT;
+                    else if (is_sum && sum_len != 5'd0)
+                        state <= S_SUM_WAIT;
                     else
                         state <= S_EXECUTE;
                 end
 
                 S_WAIT_TICKS: begin
                     if (buf_all_ticks_pending)
+                        state <= S_WRITEBACK;
+                end
+
+                S_DIV_WAIT: begin
+                    if (div_done)
+                        state <= S_WRITEBACK;
+                end
+
+                S_SUM_WAIT: begin
+                    sum_acc <= sum_acc + {{16{buf_rd_data[15]}}, buf_rd_data};
+                    sum_idx <= sum_idx + 5'd1;
+                    if (sum_idx == sum_len - 5'd1)
                         state <= S_WRITEBACK;
                 end
 

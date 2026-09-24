@@ -42,6 +42,7 @@ run_test tb_stage1_core \
     "$RTL_DIR/register_file.v" \
     "$RTL_DIR/alu.v" \
     "$RTL_DIR/stock_buffers.v" \
+    "$RTL_DIR/divider.v" \
     "$RTL_DIR/control_unit.v" \
     "$RTL_DIR/tradecpu_core.v" \
     "$SIM_DIR/tb_stage1_core.v"
@@ -50,6 +51,7 @@ run_test tb_stage2_core \
     "$RTL_DIR/register_file.v" \
     "$RTL_DIR/alu.v" \
     "$RTL_DIR/stock_buffers.v" \
+    "$RTL_DIR/divider.v" \
     "$RTL_DIR/control_unit.v" \
     "$RTL_DIR/tradecpu_core.v" \
     "$SIM_DIR/tb_stage2_core.v"
@@ -58,9 +60,19 @@ run_test tb_stage3_core \
     "$RTL_DIR/register_file.v" \
     "$RTL_DIR/alu.v" \
     "$RTL_DIR/stock_buffers.v" \
+    "$RTL_DIR/divider.v" \
     "$RTL_DIR/control_unit.v" \
     "$RTL_DIR/tradecpu_core.v" \
     "$SIM_DIR/tb_stage3_core.v"
+
+run_test tb_stage4_core \
+    "$RTL_DIR/register_file.v" \
+    "$RTL_DIR/alu.v" \
+    "$RTL_DIR/stock_buffers.v" \
+    "$RTL_DIR/divider.v" \
+    "$RTL_DIR/control_unit.v" \
+    "$RTL_DIR/tradecpu_core.v" \
+    "$SIM_DIR/tb_stage4_core.v"
 
 if [ "$FAIL" -ne 0 ]; then
     echo "One or more testbenches FAILED."

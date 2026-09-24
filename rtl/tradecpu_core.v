@@ -36,6 +36,12 @@ module tradecpu_core (
     wire        buf_all_ticks_pending;
     wire        buf_advance;
 
+    wire        div_start;
+    wire [31:0] div_dividend;
+    wire [31:0] div_divisor;
+    wire        div_done;
+    wire [31:0] div_quotient;
+
     register_file u_register_file (
         .clk    (clk),
         .rst_n  (rst_n),
@@ -69,6 +75,17 @@ module tradecpu_core (
         .rd_data           (buf_rd_data)
     );
 
+    // stand-in for the Divider Generator IP, see divider.v
+    divider u_divider (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .start    (div_start),
+        .dividend (div_dividend),
+        .divisor  (div_divisor),
+        .done     (div_done),
+        .quotient (div_quotient)
+    );
+
     control_unit u_control_unit (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -87,7 +104,12 @@ module tradecpu_core (
         .buf_rd_days_before    (buf_rd_days_before),
         .buf_rd_data           (buf_rd_data),
         .buf_all_ticks_pending (buf_all_ticks_pending),
-        .buf_advance           (buf_advance)
+        .buf_advance           (buf_advance),
+        .div_start             (div_start),
+        .div_dividend          (div_dividend),
+        .div_divisor           (div_divisor),
+        .div_done              (div_done),
+        .div_quotient          (div_quotient)
     );
 
 endmodule
