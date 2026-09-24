@@ -63,7 +63,7 @@ Bit:    31    27 26    24 23    21 20    18 17    14 13    11 10    6  5      0
         5 bits   3 bits  3 bits  3 bits  4 bits  3 bits  5 bits   6 bits
 ```
 
-- `opcode` — 5 bits (supports up to 32 opcodes; 21 used, 11 reserved)
+- `opcode` — 5 bits (supports up to 32 opcodes; 25 used, 7 reserved)
 - `Rd` — destination register, or the sole register operand for single-register ops
 - `Rs1`, `Rs2` — source registers for 3-operand ALU ops; `Rs1` doubles as the
   quantity register for `UPDATEBALANCE`
@@ -101,14 +101,15 @@ loaded into a register.
 | `0x0F` | `GETSTOCKPRICE` | Rd, buf_id | 1 | Rd = sign-extended BUF[buf_id][head] (most recent) |
 | `0x10` | `GETSTOCKPRICEBEFORE` | Rd, buf_id, imm5 (days_before) | 1 | Rd = sign-extended BUF[buf_id][head − imm5], wrapped |
 | `0x11` | `GETSUMPRICEBEFORE` | Rd, buf_id, imm5 (days_before) | up to 30 (multi-cycle) | Rd = sum of the last imm5 entries in BUF[buf_id] |
-| `0x12` | `UPDATEBALANCE` | Rs1 (precomputed dollar amount, signed), buf_id | 1 | BALANCE += Rs1; positive = buy, negative = sell. Confirmed per team spec: the host/compiler precomputes quantity × price before sending — the FPGA does **not** multiply internally for this opcode |
+| `0x12` | `UPDATEBALANCE` | Rs1 (precomputed dollar amount, signed), buf_id | 1 | **BALANCE −= Rs1** (BALANCE is cash on hand). A positive amount is a buy, so cash goes down; a negative amount is a sell, so cash goes up. Confirmed per team spec: the host/compiler precomputes quantity × price before sending — the FPGA does **not** multiply internally for this opcode. `buf_id` is encoded but currently unused (reserved for a future `DECISION_EVENT` log) |
+| `0x18` | `SETBALANCE` | Rs1 | 1 | BALANCE = Rs1, overwriting the previous value directly (no add, no sign change). Use once at program start to seed starting cash — e.g. `SETBALANCE` with `1000000` for $10,000.00. Never seed via a negative `UPDATEBALANCE`; that was considered and rejected as too error-prone (see §8) |
 | `0x13` | `UPDATEALLSTOCKBUFFERS` | — | variable (blocking) | Stalls until a new tick has arrived for every tracked buffer, then advances all 5 buffer write pointers by one |
 | `0x14` | `HALT` | — | 1 | Halts execution until next tick cycle begins |
 | `0x15` | `CMP_GTE` | Rd, Rs1, Rs2 | 1 | Rd = (Rs1 ≥ Rs2) ? 1 : 0 |
 | `0x16` | `CMP_LTE` | Rd, Rs1, Rs2 | 1 | Rd = (Rs1 ≤ Rs2) ? 1 : 0 |
 | `0x17` | `SELECT` | Rd, Rs1 (cond), Rs2 (true val), Rs3 (false val, encoded in `buf_id` field) | 1 | Rd = (Rs1 ≠ 0) ? Rs2 : Rs3 |
 
-Opcodes `0x18`–`0x1F` are reserved for future use (8 slots free).
+Opcodes `0x19`–`0x1F` are reserved for future use (7 slots free).
 
 **`SELECT`'s 4th operand [DECISION]:** every other opcode uses at most 3
 register operands, matching the 3 register fields in the instruction word
@@ -201,6 +202,7 @@ and semantics exactly.
 | Item | Needed by | Owner |
 |---|---|---|
 | ~~What `UpdateBalance`'s quantity represents~~ | — | **Resolved**: precomputed dollar amount, host-side. No FPGA multiply needed for this opcode. |
+| ~~What BALANCE represents, and how to seed a starting value~~ | — | **Resolved** (Stage 5): BALANCE is cash on hand, not net-spend. `UPDATEBALANCE` was flipped to `BALANCE −= Rs1` so a buy decreases cash and a sell increases it, matching ordinary intuition. Seeding starting cash via a negative `UPDATEBALANCE` call was considered and rejected — it relies on a sign convention that's easy to get backwards silently, with no error if you do. A dedicated `SETBALANCE` opcode (`0x18`) was added instead: a direct overwrite, no sign trickery, same mental model as `LOAD_IMM`. Every strategy program should call `SETBALANCE` once, first, with its starting cash amount. |
 | Software team applies the ×100 rescaling fix and corrected literals (the GT Hacks Prep doc's example program still has the raw-ratio-divide bug and the `0.5` literal unfixed) | Stage 7 (used as integration test case) | Software team |
 | ~~What "cached variable for days_before" means for `GetSumPriceBefore`~~ | — | **Resolved**: no special hardware caching needed. Refers to the existing `ASSIGNVAR`/`GETVAR` pattern already in the spec — a computed average (e.g. 14-day, 26-day) is stored into a `VAR` slot once per tick for reuse by later instructions in that tick's decision logic. Confirms `GetSumPriceBefore` must support arbitrary `days_before` values (window sizes vary by strategy, not fixed to 14/26), consistent with the general sequential-accumulator design already in §4 — recomputed fresh each tick since buffer contents change via `UPDATEALLSTOCKBUFFERS`. |
 | ~~Confirm 15 variable slots is enough~~ | — | **Resolved**: 15 confirmed as the actual maximum by the software team, matches §1. |

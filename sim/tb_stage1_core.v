@@ -34,7 +34,8 @@ module tb_stage1_core;
         .rst_n       (rst_n),
         .tick_valid  (1'b0),   // no ticks in this stage's tests
         .tick_buf_id (3'd0),
-        .tick_price  (16'd0)
+        .tick_price  (16'd0),
+        .UART_RXD    (1'b1)    // serial line idle
     );
 
     always #5 clk = ~clk;

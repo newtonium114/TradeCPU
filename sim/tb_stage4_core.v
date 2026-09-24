@@ -89,7 +89,8 @@ module tb_stage4_core;
         .rst_n       (rst_n),
         .tick_valid  (tick_valid),
         .tick_buf_id (tick_buf_id),
-        .tick_price  (tick_price)
+        .tick_price  (tick_price),
+        .UART_RXD    (1'b1)    // serial line idle
     );
 
     always #5 clk = ~clk;

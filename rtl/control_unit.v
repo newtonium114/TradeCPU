@@ -2,10 +2,14 @@
 
 // Stage 1 opcodes (NOP/ADD/SUB/MUL/CMP_GT/CMP_LT), Stage 2's
 // LOAD_IMM/JMP/JMP_IF, Stage 3's buffer ops, Stage 4's DIV and
-// GETSUMPRICEBEFORE, and Stage 5's VAR/BALANCE ops -- no UART yet.
+// GETSUMPRICEBEFORE, Stage 5's VAR/BALANCE ops, and Stage 6's
+// EMITDECISION.
 //
-// prog_mem is loaded directly by the testbench for now; the UART loader
-// is Stage 6.
+// prog_mem has one write port (pm_we/pm_waddr/pm_wdata), driven by
+// uart_protocol's LOAD_PROGRAM handling. It's a separate always block
+// with no reset, so the CPU can sit in reset while its program is being
+// written; the fetch reads (ir <= prog_mem[pc], ir2 <= prog_mem[pc+1])
+// are unchanged. Testbenches may still poke prog_mem hierarchically.
 //
 // LOAD_IMM/JMP/JMP_IF are two-word instructions (spec section 3): word0
 // carries the opcode plus Rd or Rs1, word1's low bits carry the
@@ -47,6 +51,14 @@
 // BALANCE is cash on hand: UPDATEBALANCE SUBTRACTS the amount (buy +,
 // sell -); SETBALANCE (0x18, first reserved slot) overwrites it, for
 // seeding starting cash.
+//
+// EMITDECISION (0x19) Rs1, buf_id, imm5: report a trade decision to the
+// host as a DECISION_EVENT -- quantity = low 16 bits of Rs1, symbol =
+// buf_id, action = buy (1) if imm5 != 0 else sell (0). It does not touch
+// BALANCE; a strategy pairs it with UPDATEBALANCE. It holds in S_EXECUTE
+// with dec_valid high until uart_protocol's decision queue has room
+// (dec_ready), hands over on that cycle, then takes the normal WRITEBACK
+// -- 4 cycles unless the queue is full.
 // Truncation/sign-extension for VAR lives in var_store.
 
 module control_unit (
@@ -87,7 +99,17 @@ module control_unit (
     output wire [31:0] bal_amount,
     output wire        bal_set_en,
     output wire [31:0] bal_set_value,
-    input  wire [31:0] bal_value
+    input  wire [31:0] bal_value,
+
+    input  wire        pm_we,
+    input  wire [8:0]  pm_waddr,
+    input  wire [31:0] pm_wdata,
+
+    output wire        dec_valid,
+    input  wire        dec_ready,
+    output wire [2:0]  dec_buf_id,
+    output wire        dec_action,
+    output wire [15:0] dec_quantity
 );
 
     localparam OP_NOP      = 5'h00;
@@ -109,6 +131,7 @@ module control_unit (
     localparam OP_UPDATEBALANCE         = 5'h12;
     localparam OP_UPDATEALLSTOCKBUFFERS = 5'h13;
     localparam OP_SETBALANCE            = 5'h18;
+    localparam OP_EMITDECISION          = 5'h19;
 
     localparam S_FETCH     = 3'd0;
     localparam S_DECODE    = 3'd1;
@@ -128,6 +151,11 @@ module control_unit (
     reg [4:0]  sum_idx;      // days_before offset currently being read
 
     reg [31:0] prog_mem [0:511];
+
+    always @(posedge clk) begin
+        if (pm_we)
+            prog_mem[pm_waddr] <= pm_wdata;
+    end
 
     wire [4:0] opcode_f = ir[31:27];
     wire [2:0] rd_f     = ir[26:24];
@@ -165,6 +193,7 @@ module control_unit (
     wire is_getbalance     = (opcode_f == OP_GETBALANCE);
     wire is_updatebalance  = (opcode_f == OP_UPDATEBALANCE);
     wire is_setbalance     = (opcode_f == OP_SETBALANCE);
+    wire is_emit           = (opcode_f == OP_EMITDECISION);
 
     assign rf_raddr1  = rs1_f;
     assign rf_raddr2  = rs2_f;
@@ -203,6 +232,11 @@ module control_unit (
     assign bal_amount    = rf_rdata1;
     assign bal_set_en    = (state == S_WRITEBACK) && is_setbalance;
     assign bal_set_value = rf_rdata1;
+
+    assign dec_valid    = (state == S_EXECUTE) && is_emit;
+    assign dec_buf_id   = buf_id_f;
+    assign dec_action   = (imm5_f != 5'd0);
+    assign dec_quantity = rf_rdata1[15:0];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -260,7 +294,9 @@ module control_unit (
                 end
 
                 S_EXECUTE: begin
-                    state <= S_WRITEBACK;
+                    // EMITDECISION waits here for queue space
+                    if (!is_emit || dec_ready)
+                        state <= S_WRITEBACK;
                 end
 
                 S_WRITEBACK: begin
