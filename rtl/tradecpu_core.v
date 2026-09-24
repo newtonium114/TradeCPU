@@ -42,6 +42,17 @@ module tradecpu_core (
     wire        div_done;
     wire [31:0] div_quotient;
 
+    wire [3:0]  var_id;
+    wire        var_we;
+    wire [31:0] var_wdata;
+    wire [31:0] var_rdata;
+
+    wire        bal_update_en;
+    wire [31:0] bal_amount;
+    wire        bal_set_en;
+    wire [31:0] bal_set_value;
+    wire [31:0] bal_value;
+
     register_file u_register_file (
         .clk    (clk),
         .rst_n  (rst_n),
@@ -73,6 +84,25 @@ module tradecpu_core (
         .rd_buf_id         (buf_rd_id),
         .rd_days_before    (buf_rd_days_before),
         .rd_data           (buf_rd_data)
+    );
+
+    var_store u_var_store (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .var_id (var_id),
+        .we     (var_we),
+        .wdata  (var_wdata),
+        .rdata  (var_rdata)
+    );
+
+    balance_reg u_balance_reg (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .update_en (bal_update_en),
+        .amount    (bal_amount),
+        .set_en    (bal_set_en),
+        .set_value (bal_set_value),
+        .balance   (bal_value)
     );
 
     // stand-in for the Divider Generator IP, see divider.v
@@ -109,7 +139,16 @@ module tradecpu_core (
         .div_dividend          (div_dividend),
         .div_divisor           (div_divisor),
         .div_done              (div_done),
-        .div_quotient          (div_quotient)
+        .div_quotient          (div_quotient),
+        .var_id                (var_id),
+        .var_we                (var_we),
+        .var_wdata             (var_wdata),
+        .var_rdata             (var_rdata),
+        .bal_update_en         (bal_update_en),
+        .bal_amount            (bal_amount),
+        .bal_set_en            (bal_set_en),
+        .bal_set_value         (bal_set_value),
+        .bal_value             (bal_value)
     );
 
 endmodule

@@ -1,8 +1,8 @@
 `timescale 1ns/1ps
 
 // Stage 1 opcodes (NOP/ADD/SUB/MUL/CMP_GT/CMP_LT), Stage 2's
-// LOAD_IMM/JMP/JMP_IF, Stage 3's buffer ops, and Stage 4's DIV and
-// GETSUMPRICEBEFORE -- no VAR/BALANCE/UART yet.
+// LOAD_IMM/JMP/JMP_IF, Stage 3's buffer ops, Stage 4's DIV and
+// GETSUMPRICEBEFORE, and Stage 5's VAR/BALANCE ops -- no UART yet.
 //
 // prog_mem is loaded directly by the testbench for now; the UART loader
 // is Stage 6.
@@ -37,6 +37,17 @@
 // to 30. Otherwise S_SUM_WAIT reads one entry per cycle through the same
 // stock_buffers read port GETSTOCKPRICEBEFORE uses, so it takes exactly N
 // cycles (<= 30, spec section 4).
+//
+// ASSIGNVAR/GETVAR/GETBALANCE/UPDATEBALANCE/SETBALANCE are plain 1-word
+// ops on the normal path; every side effect lands on the WRITEBACK cycle
+// like a register write. ASSIGNVAR's Rs, UPDATEBALANCE's amount and
+// SETBALANCE's value all come from the Rs1 field (same as JMP_IF's Rs).
+// UPDATEBALANCE's buf_id is ignored for now -- it's only there for a
+// future DECISION_EVENT.
+// BALANCE is cash on hand: UPDATEBALANCE SUBTRACTS the amount (buy +,
+// sell -); SETBALANCE (0x18, first reserved slot) overwrites it, for
+// seeding starting cash.
+// Truncation/sign-extension for VAR lives in var_store.
 
 module control_unit (
     input  wire        clk,
@@ -65,7 +76,18 @@ module control_unit (
     output wire [31:0] div_dividend,
     output wire [31:0] div_divisor,
     input  wire        div_done,
-    input  wire [31:0] div_quotient
+    input  wire [31:0] div_quotient,
+
+    output wire [3:0]  var_id,
+    output wire        var_we,
+    output wire [31:0] var_wdata,
+    input  wire [31:0] var_rdata,
+
+    output wire        bal_update_en,
+    output wire [31:0] bal_amount,
+    output wire        bal_set_en,
+    output wire [31:0] bal_set_value,
+    input  wire [31:0] bal_value
 );
 
     localparam OP_NOP      = 5'h00;
@@ -78,10 +100,15 @@ module control_unit (
     localparam OP_LOAD_IMM = 5'h09;
     localparam OP_JMP      = 5'h0A;
     localparam OP_JMP_IF   = 5'h0B;
+    localparam OP_ASSIGNVAR             = 5'h0C;
+    localparam OP_GETVAR                = 5'h0D;
+    localparam OP_GETBALANCE            = 5'h0E;
     localparam OP_GETSTOCKPRICE         = 5'h0F;
     localparam OP_GETSTOCKPRICEBEFORE   = 5'h10;
     localparam OP_GETSUMPRICEBEFORE     = 5'h11;
+    localparam OP_UPDATEBALANCE         = 5'h12;
     localparam OP_UPDATEALLSTOCKBUFFERS = 5'h13;
+    localparam OP_SETBALANCE            = 5'h18;
 
     localparam S_FETCH     = 3'd0;
     localparam S_DECODE    = 3'd1;
@@ -106,6 +133,7 @@ module control_unit (
     wire [2:0] rd_f     = ir[26:24];
     wire [2:0] rs1_f    = ir[23:21];
     wire [2:0] rs2_f    = ir[20:18];
+    wire [3:0] var_id_f = ir[17:14];
     wire [2:0] buf_id_f = ir[13:11];
     wire [4:0] imm5_f   = ir[10:6];
 
@@ -132,6 +160,12 @@ module control_unit (
     wire is_sum     = (opcode_f == OP_GETSUMPRICEBEFORE);
     wire [4:0] sum_len = (imm5_f > 5'd30) ? 5'd30 : imm5_f;
 
+    wire is_assignvar      = (opcode_f == OP_ASSIGNVAR);
+    wire is_getvar         = (opcode_f == OP_GETVAR);
+    wire is_getbalance     = (opcode_f == OP_GETBALANCE);
+    wire is_updatebalance  = (opcode_f == OP_UPDATEBALANCE);
+    wire is_setbalance     = (opcode_f == OP_SETBALANCE);
+
     assign rf_raddr1  = rs1_f;
     assign rf_raddr2  = rs2_f;
     assign alu_opcode = opcode_f;
@@ -150,13 +184,25 @@ module control_unit (
     assign div_divisor  = rf_rdata2;
 
     assign rf_waddr = rd_f;
-    assign rf_wdata = is_load_imm ? {{16{imm16_f[15]}}, imm16_f} :
-                      is_buf_read ? {{16{buf_rd_data[15]}}, buf_rd_data} :
-                      is_div      ? div_quotient :
-                      is_sum      ? sum_acc :
-                                    alu_result;
+    assign rf_wdata = is_load_imm   ? {{16{imm16_f[15]}}, imm16_f} :
+                      is_buf_read   ? {{16{buf_rd_data[15]}}, buf_rd_data} :
+                      is_div        ? div_quotient :
+                      is_sum        ? sum_acc :
+                      is_getvar     ? var_rdata :
+                      is_getbalance ? bal_value :
+                                      alu_result;
     assign rf_we    = (state == S_WRITEBACK) &&
-                      (is_write_opcode || is_load_imm || is_buf_read || is_div || is_sum);
+                      (is_write_opcode || is_load_imm || is_buf_read || is_div || is_sum ||
+                       is_getvar || is_getbalance);
+
+    assign var_id     = var_id_f;
+    assign var_we     = (state == S_WRITEBACK) && is_assignvar;
+    assign var_wdata  = rf_rdata1;
+
+    assign bal_update_en = (state == S_WRITEBACK) && is_updatebalance;
+    assign bal_amount    = rf_rdata1;
+    assign bal_set_en    = (state == S_WRITEBACK) && is_setbalance;
+    assign bal_set_value = rf_rdata1;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
