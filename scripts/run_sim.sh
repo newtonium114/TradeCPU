@@ -128,6 +128,21 @@ run_test tb_stage6_uart \
     "$RTL_DIR/tradecpu_core.v" \
     "$SIM_DIR/tb_stage6_uart.v"
 
+run_test tb_stage6_emit_balance \
+    "$RTL_DIR/register_file.v" \
+    "$RTL_DIR/alu.v" \
+    "$RTL_DIR/stock_buffers.v" \
+    "$RTL_DIR/divider.v" \
+    "$RTL_DIR/var_store.v" \
+    "$RTL_DIR/balance_reg.v" \
+    "$RTL_DIR/uart_rx.v" \
+    "$RTL_DIR/uart_tx.v" \
+    "$RTL_DIR/sync_fifo.v" \
+    "$RTL_DIR/uart_protocol.v" \
+    "$RTL_DIR/control_unit.v" \
+    "$RTL_DIR/tradecpu_core.v" \
+    "$SIM_DIR/tb_stage6_emit_balance.v"
+
 # Board top (tradecpu_top): real 100 MHz -> MMCM -> 50 MHz clocking, using
 # Vivado's own MMCME2_BASE/BUFG simulation models from the install.
 # Point XILINX_VIVADO at the install if it isn't the default path.

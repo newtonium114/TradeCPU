@@ -3,7 +3,7 @@
 // Stage 1 opcodes (NOP/ADD/SUB/MUL/CMP_GT/CMP_LT), Stage 2's
 // LOAD_IMM/JMP/JMP_IF, Stage 3's buffer ops, Stage 4's DIV and
 // GETSUMPRICEBEFORE, Stage 5's VAR/BALANCE ops, and Stage 6's
-// EMITDECISION.
+// EMITDECISION / EMITBALANCE.
 //
 // prog_mem has one write port (pm_we/pm_waddr/pm_wdata), driven by
 // uart_protocol's LOAD_PROGRAM handling. It's a separate always block
@@ -55,10 +55,19 @@
 // EMITDECISION (0x19) Rs1, buf_id, imm5: report a trade decision to the
 // host as a DECISION_EVENT -- quantity = low 16 bits of Rs1, symbol =
 // buf_id, action = buy (1) if imm5 != 0 else sell (0). It does not touch
-// BALANCE; a strategy pairs it with UPDATEBALANCE. It holds in S_EXECUTE
-// with dec_valid high until uart_protocol's decision queue has room
-// (dec_ready), hands over on that cycle, then takes the normal WRITEBACK
-// -- 4 cycles unless the queue is full.
+// BALANCE; a strategy pairs it with UPDATEBALANCE.
+//
+// EMITBALANCE (0x1A) Rs1: report a 32-bit value to the host as an
+// EMIT_BALANCE message -- all 32 bits of Rs1. It doesn't read BALANCE
+// itself; a program does GETBALANCE Rx then EMITBALANCE Rx.
+//
+// Both EMITs hand one message to uart_protocol's outgoing queue:
+// msg_kind (0 = decision, 1 = balance) + msg_data (decision fields
+// packed {buf_id, action, quantity} in the low 20 bits, or the 32-bit
+// value). They hold in S_EXECUTE with msg_valid high until the queue has
+// room (msg_ready), hand over on that cycle, then take the normal
+// WRITEBACK -- 4 cycles unless the queue is full. One queue, so messages
+// go out in the order the program issued them, whatever their kind.
 // Truncation/sign-extension for VAR lives in var_store.
 
 module control_unit (
@@ -105,11 +114,10 @@ module control_unit (
     input  wire [8:0]  pm_waddr,
     input  wire [31:0] pm_wdata,
 
-    output wire        dec_valid,
-    input  wire        dec_ready,
-    output wire [2:0]  dec_buf_id,
-    output wire        dec_action,
-    output wire [15:0] dec_quantity
+    output wire        msg_valid,
+    input  wire        msg_ready,
+    output wire        msg_kind,
+    output wire [31:0] msg_data
 );
 
     localparam OP_NOP      = 5'h00;
@@ -132,6 +140,7 @@ module control_unit (
     localparam OP_UPDATEALLSTOCKBUFFERS = 5'h13;
     localparam OP_SETBALANCE            = 5'h18;
     localparam OP_EMITDECISION          = 5'h19;
+    localparam OP_EMITBALANCE           = 5'h1A;
 
     localparam S_FETCH     = 3'd0;
     localparam S_DECODE    = 3'd1;
@@ -193,7 +202,9 @@ module control_unit (
     wire is_getbalance     = (opcode_f == OP_GETBALANCE);
     wire is_updatebalance  = (opcode_f == OP_UPDATEBALANCE);
     wire is_setbalance     = (opcode_f == OP_SETBALANCE);
-    wire is_emit           = (opcode_f == OP_EMITDECISION);
+    wire is_emit_decision  = (opcode_f == OP_EMITDECISION);
+    wire is_emit_balance   = (opcode_f == OP_EMITBALANCE);
+    wire is_emit           = is_emit_decision || is_emit_balance;
 
     assign rf_raddr1  = rs1_f;
     assign rf_raddr2  = rs2_f;
@@ -233,10 +244,10 @@ module control_unit (
     assign bal_set_en    = (state == S_WRITEBACK) && is_setbalance;
     assign bal_set_value = rf_rdata1;
 
-    assign dec_valid    = (state == S_EXECUTE) && is_emit;
-    assign dec_buf_id   = buf_id_f;
-    assign dec_action   = (imm5_f != 5'd0);
-    assign dec_quantity = rf_rdata1[15:0];
+    assign msg_valid = (state == S_EXECUTE) && is_emit;
+    assign msg_kind  = is_emit_balance;
+    assign msg_data  = is_emit_balance ? rf_rdata1 :
+                       {12'd0, buf_id_f, (imm5_f != 5'd0), rf_rdata1[15:0]};
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -294,8 +305,8 @@ module control_unit (
                 end
 
                 S_EXECUTE: begin
-                    // EMITDECISION waits here for queue space
-                    if (!is_emit || dec_ready)
+                    // EMITDECISION/EMITBALANCE wait here for queue space
+                    if (!is_emit || msg_ready)
                         state <= S_WRITEBACK;
                 end
 

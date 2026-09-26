@@ -29,7 +29,10 @@
 //   [11]   LOAD_PROGRAM in progress / CPU held (stays lit after a load
 //          that timed out part-way)
 //   [12]   flips on every complete TICK / LOAD_PROGRAM received
-//   [13]   flips on every DECISION_EVENT sent
+//   [13]   flips on every DECISION_EVENT sent (not on EMIT_BALANCE -- a
+//          strategy that reports balance after each trade would flip it
+//          twice per trade and it would look stuck; all 16 LEDs are
+//          already in use, so balance gets no LED of its own)
 //   [14]   protocol error seen (sticky until reset)
 //   [15]   board reset active
 

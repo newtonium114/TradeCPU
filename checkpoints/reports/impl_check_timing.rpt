@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ----------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Thu Sep 24 00:16:20 2026
+| Date         : Fri Sep 25 22:18:04 2026
 | Host         : Abhay_PC running 64-bit major release  (build 9200)
 | Command      : check_timing -verbose -file {C:/Users/abhay/OneDrive/Documents/projects/Trade CPU/checkpoints/reports/impl_check_timing.rpt}
 | Design       : tradecpu_top

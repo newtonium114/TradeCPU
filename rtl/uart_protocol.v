@@ -33,15 +33,20 @@
 // LOAD_PROGRAM. A UART framing error also sets proto_error.
 //
 // FPGA -> host:
-//   DECISION_EVENT 03 | buf_id | action | qty_lo qty_hi
-//     - the CPU hands over one decision (EMITDECISION) with a
-//       dec_valid/dec_ready handshake. Decisions queue in an 8-deep FIFO
-//       and are serialized 5 bytes each; when the FIFO is full dec_ready
-//       drops and the CPU stalls until there's room, so none are lost.
+//   DECISION_EVENT 03 | buf_id | action | qty_lo qty_hi       (EMITDECISION)
+//   EMIT_BALANCE   04 | b0 b1 b2 b3  (int32, b0 = bits 7:0)   (EMITBALANCE)
+//     - the CPU hands over one message at a time with a
+//       msg_valid/msg_ready handshake (msg_kind 0 = decision,
+//       1 = balance). Both kinds share one 8-deep FIFO, so they go out in
+//       the order the program issued them. Each is serialized as 5 bytes;
+//       when the FIFO is full msg_ready drops and the CPU stalls until
+//       there's room, so none are lost.
 //
 // Status outputs (for LEDs): prog_loaded, proto_error (sticky until
 // reset), rx_msg_toggle (flips per complete TICK/LOAD_PROGRAM),
-// tx_msg_toggle (flips per DECISION_EVENT sent).
+// tx_msg_toggle (flips per DECISION_EVENT sent -- not per EMIT_BALANCE:
+// a strategy that reports balance after every trade would otherwise
+// flip it twice per trade and the LED would look stuck).
 
 module uart_protocol #(
     parameter TIMEOUT_CYCLES = 10000000
@@ -66,11 +71,10 @@ module uart_protocol #(
     output reg  [2:0]  tick_buf_id,
     output reg  [15:0] tick_price,
 
-    input  wire        dec_valid,
-    output wire        dec_ready,
-    input  wire [2:0]  dec_buf_id,
-    input  wire        dec_action,
-    input  wire [15:0] dec_quantity,
+    input  wire        msg_valid,
+    output wire        msg_ready,
+    input  wire        msg_kind,
+    input  wire [31:0] msg_data,
 
     output reg         prog_loaded,
     output reg         proto_error,
@@ -81,6 +85,7 @@ module uart_protocol #(
     localparam MSG_LOAD_PROGRAM   = 8'h01;
     localparam MSG_TICK           = 8'h02;
     localparam MSG_DECISION_EVENT = 8'h03;
+    localparam MSG_EMIT_BALANCE   = 8'h04;
 
     localparam R_IDLE    = 3'd0;
     localparam R_LEN_LO  = 3'd1;
@@ -232,57 +237,71 @@ module uart_protocol #(
 
     // ---------------- transmit side ----------------
 
-    // one queued decision: {buf_id[2:0], action, quantity[15:0]}
+    // one queued message: {kind, data[31:0]}
+    //   kind 0 (decision): data = {12'd0, buf_id[2:0], action, quantity[15:0]}
+    //   kind 1 (balance):  data = the 32-bit value
     wire        fifo_full, fifo_empty;
-    wire [19:0] fifo_rd_data;
+    wire [32:0] fifo_rd_data;
     wire        fifo_rd_en;
 
     reg         tx_active;
     reg [2:0]   tx_idx;
-    reg [19:0]  tx_rec;
+    reg         tx_kind;
+    reg [31:0]  tx_rec;
 
-    assign dec_ready  = !fifo_full;
+    assign msg_ready  = !fifo_full;
     assign fifo_rd_en = !tx_active && !fifo_empty;
 
     sync_fifo #(
-        .WIDTH  (20),
+        .WIDTH  (33),
         .ADDR_W (3)
-    ) u_decision_fifo (
+    ) u_msg_fifo (
         .clk     (clk),
         .rst_n   (rst_n),
-        .wr_en   (dec_valid),
-        .wr_data ({dec_buf_id, dec_action, dec_quantity}),
+        .wr_en   (msg_valid),
+        .wr_data ({msg_kind, msg_data}),
         .full    (fifo_full),
         .rd_en   (fifo_rd_en),
         .rd_data (fifo_rd_data),
         .empty   (fifo_empty)
     );
 
-    assign tx_data = (tx_idx == 3'd0) ? MSG_DECISION_EVENT :
-                     (tx_idx == 3'd1) ? {5'd0, tx_rec[19:17]} :
-                     (tx_idx == 3'd2) ? {7'd0, tx_rec[16]} :
-                     (tx_idx == 3'd3) ? tx_rec[7:0] :
-                                        tx_rec[15:8];
+    // both message kinds are 5 bytes: type byte + 4 payload bytes
+    wire [7:0] decision_byte = (tx_idx == 3'd0) ? MSG_DECISION_EVENT :
+                               (tx_idx == 3'd1) ? {5'd0, tx_rec[19:17]} :
+                               (tx_idx == 3'd2) ? {7'd0, tx_rec[16]} :
+                               (tx_idx == 3'd3) ? tx_rec[7:0] :
+                                                  tx_rec[15:8];
 
+    wire [7:0] balance_byte  = (tx_idx == 3'd0) ? MSG_EMIT_BALANCE :
+                               (tx_idx == 3'd1) ? tx_rec[7:0] :
+                               (tx_idx == 3'd2) ? tx_rec[15:8] :
+                               (tx_idx == 3'd3) ? tx_rec[23:16] :
+                                                  tx_rec[31:24];
+
+    assign tx_data  = tx_kind ? balance_byte : decision_byte;
     assign tx_start = tx_active && !tx_busy;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_active     <= 1'b0;
             tx_idx        <= 3'd0;
-            tx_rec        <= 20'd0;
+            tx_kind       <= 1'b0;
+            tx_rec        <= 32'd0;
             tx_msg_toggle <= 1'b0;
         end else if (!tx_active) begin
             if (!fifo_empty) begin
-                tx_rec    <= fifo_rd_data;
+                tx_kind   <= fifo_rd_data[32];
+                tx_rec    <= fifo_rd_data[31:0];
                 tx_idx    <= 3'd0;
                 tx_active <= 1'b1;
             end
         end else if (!tx_busy) begin
             // tx_start is high this cycle: uart_tx takes tx_data now
             if (tx_idx == 3'd4) begin
-                tx_active     <= 1'b0;
-                tx_msg_toggle <= ~tx_msg_toggle;
+                tx_active <= 1'b0;
+                if (!tx_kind)
+                    tx_msg_toggle <= ~tx_msg_toggle;
             end
             tx_idx <= tx_idx + 3'd1;
         end

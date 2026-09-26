@@ -99,11 +99,10 @@ module tradecpu_core #(
     wire [2:0]  uart_tick_buf_id;
     wire [15:0] uart_tick_price;
 
-    wire        dec_valid;
-    wire        dec_ready;
-    wire [2:0]  dec_buf_id;
-    wire        dec_action;
-    wire [15:0] dec_quantity;
+    wire        msg_valid;
+    wire        msg_ready;
+    wire        msg_kind;
+    wire [31:0] msg_data;
 
     // cpu_hold is a flop output, so this is a clean reset
     wire cpu_rst_n = rst_n & ~cpu_hold;
@@ -224,11 +223,10 @@ module tradecpu_core #(
         .pm_we                 (pm_we),
         .pm_waddr              (pm_waddr),
         .pm_wdata              (pm_wdata),
-        .dec_valid             (dec_valid),
-        .dec_ready             (dec_ready),
-        .dec_buf_id            (dec_buf_id),
-        .dec_action            (dec_action),
-        .dec_quantity          (dec_quantity)
+        .msg_valid             (msg_valid),
+        .msg_ready             (msg_ready),
+        .msg_kind              (msg_kind),
+        .msg_data              (msg_data)
     );
 
     // ---------------- UART link ----------------
@@ -273,11 +271,10 @@ module tradecpu_core #(
         .tick_valid    (uart_tick_valid),
         .tick_buf_id   (uart_tick_buf_id),
         .tick_price    (uart_tick_price),
-        .dec_valid     (dec_valid),
-        .dec_ready     (dec_ready),
-        .dec_buf_id    (dec_buf_id),
-        .dec_action    (dec_action),
-        .dec_quantity  (dec_quantity),
+        .msg_valid     (msg_valid),
+        .msg_ready     (msg_ready),
+        .msg_kind      (msg_kind),
+        .msg_data      (msg_data),
         .prog_loaded   (dbg_prog_loaded),
         .proto_error   (dbg_proto_error),
         .rx_msg_toggle (dbg_rx_msg_toggle),

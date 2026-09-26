@@ -133,7 +133,7 @@ module tb_stage6_uart;
 
     integer emit_stall_cycles;
     always @(posedge clk) begin
-        if (dut.u_control_unit.dec_valid && !dut.u_control_unit.dec_ready)
+        if (dut.u_control_unit.msg_valid && !dut.u_control_unit.msg_ready)
             emit_stall_cycles = emit_stall_cycles + 1;
     end
 

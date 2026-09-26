@@ -65,18 +65,18 @@ now runs at 50 MHz from an MMCM (see `rtl/tradecpu_top.v`).
 
 ## Latest results
 
-Stage 6 design (full CPU + UART + MMCM), Vivado 2026.1, xc7s50csga324-2,
-core on the MMCM's 50 MHz clock (`clk50_mmcm`, 20 ns). Full reports in
-`reports/`.
+Stage 6 design (full CPU + UART + MMCM, including EMITBALANCE), Vivado
+2026.1, xc7s50csga324-2, core on the MMCM's 50 MHz clock (`clk50_mmcm`,
+20 ns). Full reports in `reports/`.
 
 **Timing: met, with real margin.**
 
 | | |
 |---|---|
-| Worst setup slack (WNS) | **+4.929 ns** on a 20 ns period (0 failing of 4240 endpoints) |
-| Worst hold slack (WHS)  | +0.036 ns (0 failing) |
+| Worst setup slack (WNS) | **+5.310 ns** on a 20 ns period (0 failing of 4369 endpoints) |
+| Worst hold slack (WHS)  | +0.072 ns (0 failing) |
 | Pulse width (WPWS)      | +3.000 ns |
-| Implied max clock       | 1 / (20 - 4.929 ns) = ~66 MHz |
+| Implied max clock       | 1 / (20 - 5.310 ns) = ~68 MHz |
 
 `check_timing`: 0 unclocked registers, 0 unconstrained internal
 endpoints, 0 combinational loops. The only ports without I/O delays are
@@ -84,9 +84,11 @@ the 2 inputs / 17 outputs deliberately cut as asynchronous in the xdc.
 
 Worst path: `prog_mem` block RAM (instruction word) -> operand select ->
 32x32 `MUL` (two cascaded DSP48E1s) -> register file write, 11 logic
-levels, 14.82 ns. The next nine worst paths are the same shape
-(4.97-5.27 ns slack). At 100 MHz this path would miss by ~5 ns -- the
-move to 50 MHz was necessary, not just cautious.
+levels. The next worst paths are the same shape. (The previous run,
+before EMITBALANCE, had 4.929 ns on the same path -- the difference is
+placement variation, not a design change on that path.) At 100 MHz this
+path would miss by ~5 ns -- the move to 50 MHz was necessary, not just
+cautious.
 
 **Errors / warnings:** 0 errors, 0 critical warnings, 39 warnings, all
 expected:
@@ -95,9 +97,10 @@ expected:
 - 1x `Synth 8-13373` a DSP48E1 removed by constant propagation -- the
   partial product that only feeds the discarded upper 32 bits of `MUL`.
 
-**Resources (post-route):** 1275 LUTs (3.9%), 1092 FFs (1.7%), 74 LUTs as
-memory (stock buffers + decision FIFO), 1 Block RAM tile (`prog_mem` --
-it did infer real BRAM), 3 DSP48E1 (`MUL`), 20 IOBs, 1 BUFG, 1 MMCM.
+**Resources (post-route):** 1306 LUTs (4.0%), 1104 FFs (1.7%), 84 LUTs as
+memory (stock buffers + 33-bit outgoing message FIFO), 1 Block RAM tile
+(`prog_mem` -- it did infer real BRAM), 3 DSP48E1 (`MUL`), 20 IOBs, 1 BUFG,
+1 MMCM.
 
 **FSM / latch inference:** FSMs extracted for `uart_rx.state` and
 `uart_protocol.rstate` (sequential encoding). `control_unit.state` is kept
