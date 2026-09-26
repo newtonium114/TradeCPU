@@ -18,7 +18,7 @@ so it can be revisited, but nothing is left ambiguous.
 | Stock buffers | 5 buffers, `BUF[0..4]`, each a 30-entry circular buffer of **16-bit signed** integers |
 | Program memory | 512 instruction words × 32 bits (loaded via UART) |
 | Instruction word width | 32 bits (fixed); some instructions use a second 32-bit word for a 16-bit immediate |
-| Target clock frequency | 50 MHz (revisit after Stage 1 timing report; not a hard requirement) |
+| Core clock frequency | **50 MHz — settled (Stage 6).** Derived from the board's 100 MHz oscillator via an MMCM (×10 ÷20), not a flip-flop divider. UART baud divisor recalculated for this clock: 434 clocks/bit at 115200 baud. See §9 for the timing closure results that confirmed this. |
 
 **[DECISION] Register width is 32-bit, not 16-bit.** Earlier drafts assumed
 16-bit registers throughout. That breaks for `BALANCE`: a starting balance
@@ -63,7 +63,7 @@ Bit:    31    27 26    24 23    21 20    18 17    14 13    11 10    6  5      0
         5 bits   3 bits  3 bits  3 bits  4 bits  3 bits  5 bits   6 bits
 ```
 
-- `opcode` — 5 bits (supports up to 32 opcodes; 25 used, 7 reserved)
+- `opcode` — 5 bits (supports up to 32 opcodes; 27 used, 5 reserved)
 - `Rd` — destination register, or the sole register operand for single-register ops
 - `Rs1`, `Rs2` — source registers for 3-operand ALU ops; `Rs1` doubles as the
   quantity register for `UPDATEBALANCE`
@@ -109,7 +109,20 @@ loaded into a register.
 | `0x16` | `CMP_LTE` | Rd, Rs1, Rs2 | 1 | Rd = (Rs1 ≤ Rs2) ? 1 : 0 |
 | `0x17` | `SELECT` | Rd, Rs1 (cond), Rs2 (true val), Rs3 (false val, encoded in `buf_id` field) | 1 | Rd = (Rs1 ≠ 0) ? Rs2 : Rs3 |
 
-Opcodes `0x19`–`0x1F` are reserved for future use (7 slots free).
+| `0x19` | `EMITDECISION` | Rs1 (quantity register, low 16 bits sent), buf_id (symbol), imm5 (action: 0 = sell, nonzero = buy, 1 by convention) | 1 | Queues one `DECISION_EVENT` message (§6.3) for transmission to the host. Does **not** touch `BALANCE` — a real trade is `UPDATEBALANCE` (cash) followed by `EMITDECISION` (report to host), kept as two separate concerns. If 8 decisions are already queued, execution pauses until there's room (backed by an 8-deep FIFO), so nothing is silently dropped |
+
+| `0x1A` | `EMITBALANCE` | Rs1 (full 32-bit signed value) | 1 | Queues a message carrying Rs1's full 32-bit value for transmission to the host (§6, `EMIT_BALANCE`). Does not read `BALANCE` directly — the caller must `GETBALANCE` into a register first. Shares the same 8-deep outgoing queue as `EMITDECISION`; if full, execution pauses until there's room. Messages transmit in the order issued, regardless of type |
+
+Opcodes `0x1B`–`0x1F` are reserved for future use (5 slots free).
+
+**`EMITDECISION` [DECISION]:** `UPDATEBALANCE`'s `buf_id` field was originally
+flagged as "reserved for a future `DECISION_EVENT` log," but `UPDATEBALANCE`
+only carries a dollar amount, not a share quantity, which `DECISION_EVENT`'s
+wire format requires — the two don't map directly. Rather than widen
+`UPDATEBALANCE`'s encoding (which the software team already builds
+against) or infer buy/sell from a value's sign (the same fragile pattern
+already rejected for `SETBALANCE`'s seeding — see §8), `EMITDECISION` is a
+dedicated opcode. `UPDATEBALANCE`'s `buf_id` field is now simply unused.
 
 **`SELECT`'s 4th operand [DECISION]:** every other opcode uses at most 3
 register operands, matching the 3 register fields in the instruction word
@@ -143,6 +156,28 @@ every message has a known fixed or length-prefixed size; both sides must
 stay byte-aligned (a lightweight sync byte or checksum is an open
 hardening option, not required for v1).
 
+**[DECISION] Serial settings (Stage 6):** 115200 baud, 8N1 (8 data bits,
+no parity, 1 stop bit, no flow control). Both sides must match this
+exactly or bytes will be garbled.
+
+**[DECISION] Protocol behaviors not otherwise specified (Stage 6):**
+- `LOAD_PROGRAM` holds the CPU in reset for the duration of the message.
+  On completion, the CPU restarts at address 0 with **registers, VAR,
+  BALANCE, buffer head positions, and staged ticks all cleared. Buffer
+  *contents* are kept.** A length of 0 simply restarts the current
+  program without reloading. **Consequence for software: every program
+  load, including a reload of the identical program, needs `SETBALANCE`
+  called again — BALANCE does not persist across a reload.**
+- Lengths not a multiple of 4, or longer than 2048 bytes, are read
+  through to stay byte-aligned, but the excess bytes are dropped.
+- If the host goes quiet mid-message for more than 100ms, the FPGA drops
+  the partial message and resumes reading fresh. If that message was a
+  `LOAD_PROGRAM`, the CPU remains held in reset until a complete load
+  arrives. The host should send each message in a single write.
+- A `TICK` with `buf_id` above 4 is dropped entirely (not wrapped/masked).
+- An unrecognized message type or a corrupted byte is ignored (and, on
+  real hardware, lights an error indicator).
+
 ### 6.1 `LOAD_PROGRAM` (Host → FPGA)
 
 | Bytes | Field | Meaning |
@@ -174,6 +209,17 @@ each.
 | 2 | Quantity (int16) | Shares |
 
 Total: 5 bytes.
+
+### 6.4 `EMIT_BALANCE` (FPGA → Host)
+
+| Bytes | Field | Meaning |
+|---|---|---|
+| 1 | `0x04` | Message type |
+| 4 | Balance (int32) | Full signed 32-bit value, little-endian |
+
+Total: 5 bytes. Sent when the running program executes `EMITBALANCE`.
+Shares one outgoing queue (8 deep) with `DECISION_EVENT` — both message
+types transmit in the order the program issued them.
 
 ---
 
@@ -211,3 +257,28 @@ and semantics exactly.
 
 Everything else in this document is a settled, buildable default — proceed
 without waiting on the items above; none block Stages 0 through 6.
+
+---
+
+## 9. Timing closure (Stage 6 checkpoint, confirmed on real Vivado place & route)
+
+The 50 MHz clock target (§1) is confirmed, not just planned. Full
+`tradecpu_top` design, Vivado 2026.1, xc7s50csga324-2:
+
+- **Worst setup slack: +4.929 ns** on the 20 ns (50 MHz) period, 0 of 4240
+  endpoints failing. Worst hold slack: +0.036 ns, also met.
+- Design's real ceiling is roughly 66 MHz — confirms 50 MHz has genuine
+  margin, and confirms 100 MHz (tried at an earlier, smaller-design
+  checkpoint and already failing by ~5 ns then) was correctly ruled out.
+- Worst path: instruction memory → operand select → the 32×32 `MUL`
+  (two chained DSP48E1 blocks) → register write, 14.82 ns.
+- `prog_mem` (Stage 6's `LOAD_PROGRAM` write path) synthesizes to real
+  block RAM, as expected once it gained a genuine write port.
+- Resource usage: 3.9% LUTs, 1.7% flip-flops, 3 DSP blocks, 1 MMCM.
+- 0 errors, 0 critical warnings. Two benign DRC/methodology notes
+  (reset signal construction, `prog_mem`'s async-reset address
+  registers) are documented in `checkpoints/README.md`.
+
+Reproducible via `checkpoints/run_checkpoint.tcl` (Vivado non-project
+mode, reads `rtl/` directly, no bitstream generated) — see
+`checkpoints/README.md` for usage and full report contents.
